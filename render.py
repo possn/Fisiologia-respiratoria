@@ -8,14 +8,31 @@ import imageio.v2 as imageio
 # ============================================================
 # OUTPUT
 # ============================================================
-OUT = "Respiracao_Normal_Base_Aula_Internos_60s.mp4"
+OUT = "Respiracao_Normal_Base_Aula_Internos_EOM_60s.mp4"
 
 # ============================================================
 # VIDEO SETTINGS
 # ============================================================
-FPS = 12
+FPS = 15          # <- mais suave
 DURATION_S = 60
-W, H = 1280, 720
+
+# ============================================================
+# Robust trapezoid integration (NumPy compat)
+# ============================================================
+def integrate_trapezoid(y, x):
+    """
+    NumPy 2.x: np.trapezoid exists; np.trapz may not.
+    This wrapper works across versions.
+    """
+    if hasattr(np, "trapezoid"):
+        return np.trapezoid(y, x)
+    # Fallback: manual trapezoid
+    y = np.asarray(y, dtype=float)
+    x = np.asarray(x, dtype=float)
+    if y.size < 2:
+        return 0.0
+    dx = np.diff(x)
+    return np.sum((y[:-1] + y[1:]) * 0.5 * dx)
 
 # ============================================================
 # LUNG VOLUMES (adulto típico, mL) — valores didácticos aproximados
@@ -48,6 +65,20 @@ FLOW_PEAK_INSP = 0.45
 FLOW_PEAK_EXP  = -0.35
 
 # ============================================================
+# Equação do Movimento (didáctico)
+# Paw(t) = R*Vdot + E*V + baseline
+# baseline aqui é conceptual (no ventilador = PEEP)
+# ============================================================
+R_AW = 8.0               # cmH2O/(L/s) (didático)
+C_RS = 0.060             # L/cmH2O     (60 mL/cmH2O)
+E_RS = 1.0 / C_RS        # cmH2O/L
+
+# ============================================================
+# Visual scaling (common bars)
+# ============================================================
+BAR_MAX_CM = 15.0        # <- escala comum para R·V’ e E·V
+
+# ============================================================
 # Helpers
 # ============================================================
 def canvas_to_rgb(fig):
@@ -55,7 +86,6 @@ def canvas_to_rgb(fig):
     return np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
 
 def breath_phase(t):
-    """Retorna fase dentro do ciclo e se está em inspiração/expiração."""
     t0 = t % T_CYCLE
     if t0 < INSP:
         return t0, "insp"
@@ -135,12 +165,17 @@ for i in range(total_frames):
     tp, ph = breath_phase(t)
 
     # Instant signals
-    v_tidal = volume_waveform(t)
-    ppl = ppl_waveform(t)
+    v_tidal_ml = volume_waveform(t)     # mL
+    v_tidal_L  = v_tidal_ml / 1000.0    # L
+    ppl  = ppl_waveform(t)
     palv = palv_waveform(t)
-    flow = flow_waveform(t)
-    pl = palv - ppl
-    vol_abs = FRC + v_tidal
+    flow_Ls = flow_waveform(t)          # L/s
+    pl   = palv - ppl
+    vol_abs = FRC + v_tidal_ml
+
+    # Equation of motion terms (didactic)
+    P_res = R_AW * flow_Ls              # cmH2O (±)
+    P_el  = E_RS * v_tidal_L            # cmH2O (>=0)
 
     # Histories
     t_hist = make_history(t, FPS, HIST_SEC)
@@ -149,31 +184,24 @@ for i in range(total_frames):
     ppl_hist  = np.array([ppl_waveform(tt) for tt in t_hist])
     palv_hist = np.array([palv_waveform(tt) for tt in t_hist])
     pl_hist   = palv_hist - ppl_hist
-    flow_hist = np.array([flow_waveform(tt) for tt in t_hist])  # L/s
-
-    # Flow in L/min for display
+    flow_hist = np.array([flow_waveform(tt) for tt in t_hist])      # L/s
     flow_hist_lmin = flow_hist * 60.0
 
-    # VT from flow integration (conceptual) over current inspiration window:
-    # integrate positive flow since start of current inspiration in the current cycle
-    # (didactic; not strict physiology)
-    t0_cycle = t - (t % T_CYCLE)
-    t_insp_start = t0_cycle
-    # build a small integration grid for this cycle only
-    t_cycle_grid = np.linspace(t0_cycle, t, max(2, int((t - t0_cycle) * FPS) + 1))
+    # VT integration concept (current cycle, inspiratory positive area)
+    t_cycle_start = t - (t % T_CYCLE)
+    t_cycle_grid = np.linspace(t_cycle_start, t, max(2, int((t - t_cycle_start) * FPS) + 1))
     flow_cycle = np.array([flow_waveform(tt) for tt in t_cycle_grid])  # L/s
-    # only integrate inspiratory positive flow
     flow_pos = np.clip(flow_cycle, 0, None)
-    vt_integrated_ml = np.trapz(flow_pos, t_cycle_grid) * 1000.0  # L -> mL
+    vt_integrated_ml = integrate_trapezoid(flow_pos, t_cycle_grid) * 1000.0  # L->mL
 
     # Zoom
     ppl_zoom  = np.array([ppl_waveform(tt) for tt in t_zoom])
     palv_zoom = np.array([palv_waveform(tt) for tt in t_zoom])
     pl_zoom   = palv_zoom - ppl_zoom
 
-    # =======================
+    # ============================================================
     # LAYOUT
-    # =======================
+    # ============================================================
     fig.clf()
     gs = fig.add_gridspec(
         2, 4,
@@ -181,14 +209,14 @@ for i in range(total_frames):
         height_ratios=[1.0, 1.0]
     )
 
-    ax_volumes = fig.add_subplot(gs[:, 0])      # left full height
-    ax_mech    = fig.add_subplot(gs[0, 1])      # top col 2
-    ax_traces  = fig.add_subplot(gs[1, 1])      # bottom col 2
-    ax_integr  = fig.add_subplot(gs[:, 2])      # integration panel full height
-    ax_zoom    = fig.add_subplot(gs[:, 3])      # zoom full height
+    ax_volumes = fig.add_subplot(gs[:, 0])
+    ax_mech    = fig.add_subplot(gs[0, 1])
+    ax_traces  = fig.add_subplot(gs[1, 1])
+    ax_integr  = fig.add_subplot(gs[:, 2])
+    ax_zoom    = fig.add_subplot(gs[:, 3])
 
     # ------------------------------------------------------------
-    # (A) Volumes pulmonares
+    # (A) Volumes
     # ------------------------------------------------------------
     ax_volumes.set_title("Volumes Pulmonares — VT a oscilar sobre a FRC", fontsize=12, weight="bold")
     x0 = 0.5
@@ -226,46 +254,94 @@ for i in range(total_frames):
     )
 
     # ------------------------------------------------------------
-    # (B) Mecânica
+    # (B) Mecânica + Equação do Movimento
     # ------------------------------------------------------------
-    ax_mech.set_title("Mecânica: diafragma desce → Ppl↓ → Palv↓ → fluxo→", fontsize=11, weight="bold")
+    ax_mech.set_title("Mecânica + Equação do Movimento (ligada ao que vês)", fontsize=11, weight="bold")
     ax_mech.set_xlim(0, 1)
     ax_mech.set_ylim(0, 1)
     ax_mech.axis("off")
 
-    lung_r = 0.18 + 0.10*(v_tidal / VT)
-    ax_mech.add_patch(plt.Circle((0.30, 0.60), lung_r, fill=False, lw=6, color="#2563eb"))
-    ax_mech.text(0.30, 0.60, "Pulmão", ha="center", va="center", fontsize=10, weight="bold")
+    lung_r = 0.18 + 0.10*(v_tidal_ml / VT)
+    ax_mech.add_patch(plt.Circle((0.28, 0.62), lung_r, fill=False, lw=6, color="#2563eb"))
+    ax_mech.text(0.28, 0.62, "Pulmão", ha="center", va="center", fontsize=10, weight="bold")
 
-    dia_y = 0.25 - 0.10*(v_tidal / VT)
-    xs = np.linspace(0.10, 0.55, 200)
-    arch = dia_y + 0.08*np.sin(np.pi*(xs-0.10)/0.45)
+    dia_y = 0.25 - 0.10*(v_tidal_ml / VT)
+    xs = np.linspace(0.08, 0.52, 200)
+    arch = dia_y + 0.08*np.sin(np.pi*(xs-0.08)/0.44)
     ax_mech.plot(xs, arch, lw=6, color="#111827")
-    ax_mech.text(0.56, dia_y + 0.02, "Diafragma", fontsize=9, va="center")
+    ax_mech.text(0.54, dia_y + 0.02, "Diafragma", fontsize=9, va="center")
 
     if ph == "insp":
-        ax_mech.annotate("", xy=(0.62, dia_y-0.08), xytext=(0.62, dia_y+0.08),
+        ax_mech.annotate("", xy=(0.60, dia_y-0.08), xytext=(0.60, dia_y+0.08),
                          arrowprops=dict(arrowstyle="->", lw=3, color="#dc2626"))
-        ax_mech.text(0.65, dia_y, "insp\n(desce)", color="#dc2626", fontsize=9, va="center")
+        phase_color = "#dc2626"
+        phase_word = "INSP"
     else:
-        ax_mech.annotate("", xy=(0.62, dia_y+0.08), xytext=(0.62, dia_y-0.08),
+        ax_mech.annotate("", xy=(0.60, dia_y+0.08), xytext=(0.60, dia_y-0.08),
                          arrowprops=dict(arrowstyle="->", lw=3, color="#16a34a"))
-        ax_mech.text(0.65, dia_y, "exp\n(sobe)", color="#16a34a", fontsize=9, va="center")
+        phase_color = "#16a34a"
+        phase_word = "EXP"
 
-    ax_mech.text(0.72, 0.82, f"Ppl ≈ {ppl:.1f} cmH₂O", fontsize=11, weight="bold", color="#111827")
-    ax_mech.text(0.72, 0.74, f"Palv ≈ {palv:.1f} cmH₂O", fontsize=11, weight="bold", color="#2563eb")
-    ax_mech.text(0.72, 0.66, f"PL=Palv−Ppl ≈ {pl:.1f} cmH₂O", fontsize=11, weight="bold", color="#7c3aed")
-    ax_mech.text(0.72, 0.58, f"Fluxo ≈ {flow*60:.0f} L/min", fontsize=11, weight="bold", color="#dc2626")
+    ax_mech.text(0.70, 0.86, f"Fase: {phase_word}", fontsize=11, weight="bold", color=phase_color)
+    ax_mech.text(0.70, 0.78, f"Ppl ≈ {ppl:.1f} cmH₂O", fontsize=11, weight="bold", color="#111827")
+    ax_mech.text(0.70, 0.70, f"Palv ≈ {palv:.1f} cmH₂O", fontsize=11, weight="bold", color="#2563eb")
+    ax_mech.text(0.70, 0.62, f"PL=Palv−Ppl ≈ {pl:.1f} cmH₂O", fontsize=11, weight="bold", color="#7c3aed")
+    ax_mech.text(0.70, 0.54, f"Fluxo ≈ {flow_Ls*60:.0f} L/min", fontsize=11, weight="bold", color="#dc2626")
+
+    # Highlight terms depending on flow/volume
+    res_level = min(abs(flow_Ls) / max(abs(FLOW_PEAK_INSP), 1e-6), 1.0)
+    el_level  = min(v_tidal_ml / VT, 1.0)
+
+    res_alpha = 0.25 + 0.60*res_level
+    el_alpha  = 0.25 + 0.60*el_level
 
     ax_mech.text(
-        0.72, 0.32,
-        "Mapa mental:\nPpl↓ → PL↑ → distensão\nPalv↓ → gradiente → ar entra",
+        0.05, 0.46,
+        "Equação do movimento:\n"
+        r"$P_{aw}(t)=R\cdot\dot V(t) + E\cdot V(t) + \mathrm{baseline}$",
         fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#e5e7eb")
+        bbox=dict(boxstyle="round,pad=0.35", facecolor="white", alpha=0.90, edgecolor="#e5e7eb")
     )
 
+    ax_mech.text(
+        0.06, 0.30,
+        r"$R\cdot\dot V$ (resistivo)",
+        fontsize=10, weight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="#fecaca", alpha=res_alpha, edgecolor="#fecaca")
+    )
+    ax_mech.text(
+        0.06, 0.22,
+        r"$E\cdot V$ (elástico)",
+        fontsize=10, weight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="#ddd6fe", alpha=el_alpha, edgecolor="#ddd6fe")
+    )
+    ax_mech.text(
+        0.06, 0.14,
+        "baseline (no ventilador = PEEP)",
+        fontsize=10, weight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="#e5e7eb", alpha=0.85, edgecolor="#e5e7eb")
+    )
+
+    # Bars on common scale 0–15 cmH2O
+    P_res_mag = min(abs(P_res), BAR_MAX_CM)
+    P_el_mag  = min(P_el,       BAR_MAX_CM)
+
+    # Bar frames
+    ax_mech.add_patch(plt.Rectangle((0.78, 0.10), 0.06, 0.30, fill=False, lw=2, color="#9ca3af"))
+    ax_mech.add_patch(plt.Rectangle((0.88, 0.10), 0.06, 0.30, fill=False, lw=2, color="#9ca3af"))
+
+    # Fill bars
+    ax_mech.add_patch(plt.Rectangle((0.78, 0.10), 0.06, 0.30*(P_res_mag/BAR_MAX_CM), color="#ef4444", alpha=0.85))
+    ax_mech.add_patch(plt.Rectangle((0.88, 0.10), 0.06, 0.30*(P_el_mag/BAR_MAX_CM),  color="#7c3aed", alpha=0.70))
+
+    ax_mech.text(0.81, 0.42, "R·V’", ha="center", fontsize=9, weight="bold", color="#b91c1c")
+    ax_mech.text(0.91, 0.42, "E·V",  ha="center", fontsize=9, weight="bold", color="#6d28d9")
+    ax_mech.text(0.81, 0.06, f"{abs(P_res):.1f}", ha="center", fontsize=9, color="#b91c1c")
+    ax_mech.text(0.91, 0.06, f"{P_el:.1f}",       ha="center", fontsize=9, color="#6d28d9")
+    ax_mech.text(0.845, 0.02, "cmH₂O", ha="center", fontsize=8, color="#6b7280")
+
     # ------------------------------------------------------------
-    # (C) Traçados (pressões + fluxo)
+    # (C) Traçados
     # ------------------------------------------------------------
     ax_traces.set_title("Traçados: Ppl, Palv, PL e Fluxo", fontsize=11, weight="bold")
     ax_traces.plot(t_hist, ppl_hist,  lw=2.4, color="#111827", label="Ppl")
@@ -287,27 +363,22 @@ for i in range(total_frames):
     ax_traces.legend(l1 + l2, lab1 + lab2, loc="upper right", fontsize=8, frameon=True)
     ax_traces.set_xlabel("Tempo (s)")
 
-    # Shading phases (insp/exp) in traces background for last cycle (didactic)
-    t_cycle_start = t - (t % T_CYCLE)
-    ax_traces.axvspan(t_cycle_start, t_cycle_start + INSP, color="#fecaca", alpha=0.18)  # insp
-    ax_traces.axvspan(t_cycle_start + INSP, t_cycle_start + T_CYCLE, color="#bbf7d0", alpha=0.10)  # exp
-    ax_traces.text(0.02, 0.93, "INSP", transform=ax_traces.transAxes, fontsize=9, color="#b91c1c", weight="bold")
-    ax_traces.text(0.12, 0.93, "EXP", transform=ax_traces.transAxes, fontsize=9, color="#166534", weight="bold")
+    # Shade phases in last cycle
+    ax_traces.axvspan(t_cycle_start, t_cycle_start + INSP, color="#fecaca", alpha=0.18)
+    ax_traces.axvspan(t_cycle_start + INSP, t_cycle_start + T_CYCLE, color="#bbf7d0", alpha=0.10)
 
     # ------------------------------------------------------------
     # (D) Integração: VT = ∫ Fluxo dt
     # ------------------------------------------------------------
-    ax_integr.set_title("Integração: VT ≈ ∫ Fluxo(t) dt", fontsize=12, weight="bold")
+    ax_integr.set_title("Integração: VT ≈ ∫ Fluxo(t) dt (conceito)", fontsize=12, weight="bold")
     ax_integr.grid(True, alpha=0.25)
 
-    # Plot flow (L/min) in current cycle window for clarity
     t_c = np.linspace(t_cycle_start, t_cycle_start + T_CYCLE, int(T_CYCLE * FPS))
     flow_c = np.array([flow_waveform(tt) for tt in t_c]) * 60.0
 
     ax_integr.plot(t_c, flow_c, lw=2.6, color="#dc2626", label="Fluxo (L/min)")
     ax_integr.axhline(0, color="#9ca3af", lw=1.2)
 
-    # Fill inspiratory positive area up to current time within cycle
     t_fill = t_c[t_c <= t]
     flow_fill = np.array([flow_waveform(tt) for tt in t_fill]) * 60.0
     flow_fill_pos = np.clip(flow_fill, 0, None)
@@ -320,14 +391,22 @@ for i in range(total_frames):
 
     ax_integr.text(
         0.02, 0.05,
-        f"VT acumulado (conceito) ≈ {vt_integrated_ml:.0f} mL\n(área sob o fluxo inspiratório)",
+        f"VT acumulado ≈ {vt_integrated_ml:.0f} mL\n(área sob o fluxo inspiratório)",
         transform=ax_integr.transAxes,
         fontsize=10,
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="#e5e7eb")
     )
 
+    ax_integr.text(
+        0.02, 0.90,
+        "Pressão necessária = atrito + distensão + baseline",
+        transform=ax_integr.transAxes,
+        fontsize=10, weight="bold",
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85, edgecolor="#e5e7eb")
+    )
+
     # ------------------------------------------------------------
-    # (E) Zoom didático
+    # (E) Zoom
     # ------------------------------------------------------------
     ax_zoom.set_title("Zoom: amplitudes pequenas (cmH₂O) → grandes efeitos", fontsize=12, weight="bold")
     ax_zoom.plot(t_zoom, ppl_zoom,  lw=2.8, color="#111827", label="Ppl")
@@ -340,17 +419,16 @@ for i in range(total_frames):
     ax_zoom.set_ylabel("Pressão (cmH₂O)")
     ax_zoom.set_xlabel("Tempo (s)")
 
-    # Reference lines for readability
     ax_zoom.axhline(PPL_BASE, color="#111827", lw=1.0, alpha=0.25)
     ax_zoom.axhline(PPL_INSP, color="#111827", lw=1.0, alpha=0.25)
     ax_zoom.axhline(PALV_BASE, color="#2563eb", lw=1.0, alpha=0.25)
     ax_zoom.axhline(PALV_MIN,  color="#2563eb", lw=1.0, alpha=0.25)
 
-    ax_zoom.annotate("ΔPpl ≈ 3\n(−5→−8)", xy=(t, PPL_INSP), xytext=(t_zoom[0], -9),
+    ax_zoom.annotate("ΔPpl≈3\n(−5→−8)", xy=(t, PPL_INSP), xytext=(t_zoom[0], -9),
                      arrowprops=dict(arrowstyle="->", lw=2, color="#111827"),
                      fontsize=10, color="#111827")
 
-    ax_zoom.annotate("ΔPalv ≈ 1\n(0→−1)", xy=(t, PALV_MIN), xytext=(t_zoom[0], 2.5),
+    ax_zoom.annotate("ΔPalv≈1\n(0→−1)", xy=(t, PALV_MIN), xytext=(t_zoom[0], 2.5),
                      arrowprops=dict(arrowstyle="->", lw=2, color="#2563eb"),
                      fontsize=10, color="#2563eb")
 
@@ -360,7 +438,7 @@ for i in range(total_frames):
     # Global title
     # ============================================================
     fig.suptitle(
-        f"Respiração Normal — Base para Internos | Fase: {ph.upper()} | do simples ao complexo",
+        f"Respiração Normal — Base para Internos | Fase: {ph.upper()} | Equação do Movimento ligada às curvas",
         fontsize=13, weight="bold"
     )
     plt.tight_layout(rect=[0, 0, 1, 0.95])
