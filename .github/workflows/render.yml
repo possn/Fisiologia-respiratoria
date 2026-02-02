@@ -3,14 +3,9 @@ name: Render Fisiologia Respiratória
 on:
   workflow_dispatch:
 
-concurrency:
-  group: fisiologia-respiratoria-render
-  cancel-in-progress: true
-
 jobs:
   render:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repo
@@ -24,18 +19,15 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install numpy matplotlib imageio imageio-ffmpeg
+          pip install numpy matplotlib "imageio[ffmpeg]"
 
       - name: Run render (headless)
         env:
           MPLBACKEND: Agg
         run: |
-          python -V
           python render.py
           echo "Generated files:"
           ls -lah
-          echo "MP4 files:"
-          ls -lah *.mp4 || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
