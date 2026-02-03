@@ -30,18 +30,17 @@ T_HOLD_EE2 = 1.0
 T_CYCLE    = T_HOLD_EE + T_INSP + T_HOLD_EI + T_EXP + T_HOLD_EE2  # 7s
 
 # ============================================================
-# Baselines / targets (cmH2O) — didáctico
+# Baselines / targets (cmH2O)
 # ============================================================
-PPL_EE = -5.0            # Ppl em CRF (fim exp tranquila)
-PPL_EI = -7.0            # Ppl em fim inspiração (mais negativa)
-PMUS_PEAK = abs(PPL_EI - PPL_EE)  # 2 cmH2O (esforço inspiratório)
+PPL_EE = -5.0
+PPL_EI = -7.0
+PMUS_PEAK = abs(PPL_EI - PPL_EE)  # 2 cmH2O
 
 # ============================================================
 # R-C model parameters (didáctico)
-# R: cmH2O/(L/s), C: L/cmH2O
 # ============================================================
-R = 5.0
-C = 0.20   # 200 mL/cmH2O para VT visual ~0.4–0.6 L com PMUS_PEAK=2 (didáctico)
+R = 5.0       # cmH2O/(L/s)
+C = 0.20      # L/cmH2O
 
 # ============================================================
 # Helpers
@@ -66,13 +65,6 @@ def phase_in_cycle(tau: float):
     return "hold_ee2", (tau - d) / max(T_HOLD_EE2, 1e-6)
 
 def pmus_of_tau(tau: float) -> float:
-    """
-    Pressão muscular inspiratória (Pmus):
-    - 0 em CRF
-    - sobe (insp) até PMUS_PEAK
-    - mantém (fim insp)
-    - desce (exp) de volta a 0
-    """
     ph, x = phase_in_cycle(tau)
     if ph in ("hold_ee", "hold_ee2"):
         return 0.0
@@ -80,8 +72,7 @@ def pmus_of_tau(tau: float) -> float:
         return PMUS_PEAK * smoothstep(x)
     if ph == "hold_ei":
         return PMUS_PEAK
-    # exp: relaxa
-    return PMUS_PEAK * (1.0 - smoothstep(x))
+    return PMUS_PEAK * (1.0 - smoothstep(x))  # exp: relaxa
 
 def canvas_to_rgb(fig):
     fig.canvas.draw()
@@ -89,52 +80,45 @@ def canvas_to_rgb(fig):
 
 def make_history(t: float, window: float, fps: int):
     t0 = max(0.0, t - window)
-    n = int(max(120, min(int(window*fps), int((t - t0)*fps + 1))))
+    n = int(max(140, min(int(window*fps), int((t - t0)*fps + 1))))
     return np.linspace(t0, t, n)
 
 # ============================================================
 # Precompute one-cycle signals with R-C model
 # ============================================================
-N_PRE = 6000
+N_PRE = 7000
 tau_grid = np.linspace(0.0, T_CYCLE, N_PRE)
 dt = tau_grid[1] - tau_grid[0]
 
 pmus_grid = np.array([pmus_of_tau(tau) for tau in tau_grid])
 
-V = np.zeros_like(tau_grid)      # volume acima da CRF (L)
+V = np.zeros_like(tau_grid)      # L acima CRF
 Flow = np.zeros_like(tau_grid)   # L/s
-Palv = np.zeros_like(tau_grid)   # cmH2O
 Ppl = np.zeros_like(tau_grid)    # cmH2O
+Palv = np.zeros_like(tau_grid)   # cmH2O
 
-# Modelo (via pressão pleural):
-# Ppl = PPL_EE - Pmus
-# Recuo elástico = V/C (cmH2O)
-# Relação fluxo: Flow = (Pmus - V/C)/R  (entrada quando Pmus domina)
 for k in range(1, len(tau_grid)):
     pm = pmus_grid[k-1]
-    flow = (pm - (V[k-1] / C)) / R   # L/s
+    flow = (pm - (V[k-1] / C)) / R      # L/s  (entrada: +)
     V[k] = V[k-1] + flow * dt
     Flow[k] = flow
 
-# Pressões derivadas
-# Palv (com abertura à atmosfera a 0): Palv = -R*Flow (sinal correcto: entrada -> Flow>0 -> Palv<0)
 Ppl = PPL_EE - pmus_grid
-Palv = -R * Flow
+Palv = -R * Flow                      # entrada (+flow) -> Palv negativo
 PL = Palv - Ppl
 
-# Interpoladores
 def interp_cycle(arr, tau):
     tau = tau % T_CYCLE
     return float(np.interp(tau, tau_grid, arr))
 
-def ppl_of_tau(tau):   return interp_cycle(Ppl, tau)
-def palv_of_tau(tau):  return interp_cycle(Palv, tau)
-def pl_of_tau(tau):    return interp_cycle(PL, tau)
-def flow_of_tau(tau):  return interp_cycle(Flow, tau)
-def volume_of_tau(tau):return interp_cycle(V, tau)
+def ppl_of_tau(tau):    return interp_cycle(Ppl, tau)
+def palv_of_tau(tau):   return interp_cycle(Palv, tau)
+def pl_of_tau(tau):     return interp_cycle(PL, tau)
+def flow_of_tau(tau):   return interp_cycle(Flow, tau)
+def volume_of_tau(tau): return interp_cycle(V, tau)
 
 # ============================================================
-# Drawing utilities (pulmões + mini-alvéolo + termómetro + semáforo)
+# Drawing (pulmões)
 # ============================================================
 def _mix(c1, c2, a):
     c1 = np.array(c1, dtype=float)
@@ -142,9 +126,6 @@ def _mix(c1, c2, a):
     return tuple(np.clip((1-a)*c1 + a*c2, 0, 1))
 
 def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
-    """
-    Pulmões simples/limpos (sem recortes que criem 'bolas brancas').
-    """
     cx, cy = center
     s = scale * (1.0 + 0.10*inflate)
 
@@ -158,49 +139,46 @@ def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
     lobe_w = 0.20 * s
     lobe_h = 0.30 * s
 
-    left_center = (cx - 0.12*s, cy)
-    right_center = (cx + 0.12*s, cy)
-
-    left = Ellipse(left_center, width=lobe_w, height=lobe_h, angle=10,
+    left = Ellipse((cx - 0.12*s, cy), width=lobe_w, height=lobe_h, angle=10,
                    facecolor=fill, edgecolor=edge, linewidth=4.0, alpha=0.98)
-    right = Ellipse(right_center, width=lobe_w, height=lobe_h, angle=-10,
+    right = Ellipse((cx + 0.12*s, cy), width=lobe_w, height=lobe_h, angle=-10,
                     facecolor=fill, edgecolor=edge, linewidth=4.0, alpha=0.98)
     ax.add_patch(left); ax.add_patch(right)
 
-    # Traqueia/bronquíolos
+    # traqueia
     tr_w = 0.040*s
     tr_h = 0.095*s
-    tr_x = cx - tr_w/2
-    tr_y = cy + 0.135*s
-    tr = FancyBboxPatch((tr_x, tr_y), tr_w, tr_h,
+    tr = FancyBboxPatch((cx - tr_w/2, cy + 0.135*s), tr_w, tr_h,
                         boxstyle="round,pad=0.006,rounding_size=0.012",
                         facecolor="#111827", edgecolor="#111827", linewidth=0)
     ax.add_patch(tr)
 
+    # brônquios
     bronchi_top = cy + 0.135*s
     bronchi_mid = cy + 0.090*s
     bronchi_low = cy + 0.050*s
-    bronchi_verts = [
+    verts = [
         (cx, bronchi_top),
         (cx, bronchi_mid),
         (cx - 0.06*s, bronchi_low),
         (cx, bronchi_mid),
         (cx + 0.06*s, bronchi_low),
     ]
-    bronchi_codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.MOVETO, Path.LINETO]
-    bronchi = PathPatch(Path(bronchi_verts, bronchi_codes),
-                        edgecolor="#111827", linewidth=3.6, facecolor="none", capstyle="round")
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.MOVETO, Path.LINETO]
+    bronchi = PathPatch(Path(verts, codes), edgecolor="#111827", linewidth=3.6,
+                        facecolor="none", capstyle="round")
     ax.add_patch(bronchi)
 
-    # Vasos (decorativo)
+    # vasos (decorativo)
     red = (0.86, 0.18, 0.18)
     blue = (0.12, 0.45, 0.78)
+
     def branch_path(points):
-        verts, codes = [], []
+        vv, cc = [], []
         for j, (x,y) in enumerate(points):
-            verts.append((x,y))
-            codes.append(Path.MOVETO if j==0 else Path.LINETO)
-        return Path(verts, codes)
+            vv.append((x,y))
+            cc.append(Path.MOVETO if j==0 else Path.LINETO)
+        return Path(vv, cc)
 
     vs = (1.0 + 0.10*inflate)
     rv = [(cx + 0.02*s, cy + 0.10*s),
@@ -219,31 +197,28 @@ def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
         ax.add_patch(PathPatch(branch_path(pts2), edgecolor=blue, linewidth=2.2,
                                facecolor="none", alpha=0.75, capstyle="round"))
 
-def draw_alveolus(ax, center=(0.18, 0.40), inflate=0.0):
-    """
-    Mini-alvéolo FIXO, mais pequeno, para nunca tocar nas caixas.
-    """
+# ============================================================
+# Painel direito — peças
+# ============================================================
+def draw_alveolus(ax, center=(0.20, 0.42), inflate=0.0):
     cx, cy = center
-    w = 0.12 * (0.92 + 0.10*inflate)
-    h = 0.16 * (0.90 + 0.10*inflate)
+    w = 0.10 * (0.95 + 0.05*inflate)
+    h = 0.14 * (0.95 + 0.05*inflate)
     edge = "#7c3aed"
     fill = (0.93, 0.90, 0.99)
-
-    e = Ellipse((cx, cy), width=w, height=h,
-                facecolor=fill, edgecolor=edge, linewidth=2.4, alpha=0.96)
-    ax.add_patch(e)
-
-    ax.text(cx - 0.08, cy + 0.12, "Mini-alvéolo",
-            fontsize=9.4, weight="bold", color=edge,
-            bbox=dict(boxstyle="round,pad=0.10", facecolor="white", alpha=0.85, edgecolor="none"),
-            zorder=60)
+    ax.add_patch(Ellipse((cx, cy), width=w, height=h,
+                         facecolor=fill, edgecolor=edge, linewidth=2.3, alpha=0.96, zorder=10))
+    ax.text(cx - 0.085, cy + 0.115, "Mini-alvéolo",
+            fontsize=9.2, weight="bold", color=edge,
+            bbox=dict(boxstyle="round,pad=0.10", facecolor="white", alpha=0.90, edgecolor="none"),
+            zorder=12)
 
 def draw_pl_thermometer(ax, x=0.84, y=0.32, w=0.10, h=0.52, pl_value=6.0):
     pl_min, pl_max = 4.0, 10.0
     plv = float(np.clip(pl_value, pl_min, pl_max))
     frac = (plv - pl_min) / (pl_max - pl_min)
 
-    ax.add_patch(Rectangle((x, y), w, h, fill=False, lw=2.0, edgecolor="#111827", alpha=0.85))
+    ax.add_patch(Rectangle((x, y), w, h, fill=False, lw=2.0, edgecolor="#111827", alpha=0.85, zorder=5))
 
     def y_of(pl):
         return y + h * (pl - pl_min) / (pl_max - pl_min)
@@ -251,17 +226,17 @@ def draw_pl_thermometer(ax, x=0.84, y=0.32, w=0.10, h=0.52, pl_value=6.0):
     y_low_top  = y_of(5.5)
     y_phys_top = y_of(8.0)
 
-    ax.add_patch(Rectangle((x, y), w, y_low_top - y, facecolor="#e5e7eb", edgecolor="none", alpha=0.95))
-    ax.add_patch(Rectangle((x, y_low_top), w, y_phys_top - y_low_top, facecolor="#bbf7d0", edgecolor="none", alpha=0.95))
-    ax.add_patch(Rectangle((x, y_phys_top), w, y + h - y_phys_top, facecolor="#fde68a", edgecolor="none", alpha=0.95))
+    ax.add_patch(Rectangle((x, y), w, y_low_top - y, facecolor="#e5e7eb", edgecolor="none", alpha=0.95, zorder=1))
+    ax.add_patch(Rectangle((x, y_low_top), w, y_phys_top - y_low_top, facecolor="#bbf7d0", edgecolor="none", alpha=0.95, zorder=1))
+    ax.add_patch(Rectangle((x, y_phys_top), w, y + h - y_phys_top, facecolor="#fde68a", edgecolor="none", alpha=0.95, zorder=1))
 
-    ax.add_patch(Rectangle((x, y), w, h*frac, facecolor="#7c3aed", edgecolor="none", alpha=0.55))
-    ax.plot([x-0.02, x+w+0.02], [y + h*frac, y + h*frac], color="#111827", lw=2.0)
+    ax.add_patch(Rectangle((x, y), w, h*frac, facecolor="#7c3aed", edgecolor="none", alpha=0.50, zorder=2))
+    ax.plot([x-0.02, x+w+0.02], [y + h*frac, y + h*frac], color="#111827", lw=2.0, zorder=6)
 
-    ax.text(x + w/2, y + h + 0.02, "PL", ha="center", fontsize=10, weight="bold", color="#111827")
-    ax.text(x + w/2, y - 0.045, f"{pl_value:.1f}", ha="center", fontsize=10, weight="bold", color="#7c3aed")
+    ax.text(x + w/2, y + h + 0.02, "PL", ha="center", fontsize=10, weight="bold", color="#111827", zorder=10)
+    ax.text(x + w/2, y - 0.045, f"{pl_value:.1f}", ha="center", fontsize=10, weight="bold", color="#7c3aed", zorder=10)
 
-def gradient_semaphore(ax, palv_value, base_y=0.25):
+def gradient_semaphore(ax, palv_value, base_y=0.265):
     tol = 0.10
     if palv_value < -tol:
         title = "Palv < Patm  →  ar entra"
@@ -273,19 +248,35 @@ def gradient_semaphore(ax, palv_value, base_y=0.25):
         box = "#dcfce7"
     else:
         title = "Palv = Patm  →  fluxo = 0"
-        color = "#6b7280"
-        box = "#f3f4f6"
+        color = "#374151"
+        box = "#e5e7eb"
 
-    ax.text(0.04, base_y + 0.06, "Semáforo do gradiente:", fontsize=10.2, weight="bold",
-            color="#111827", zorder=40)
-    ax.text(0.04, base_y, title, fontsize=11.0, weight="bold",
-            bbox=dict(boxstyle="round,pad=0.28", facecolor=box, edgecolor=box, alpha=0.98),
-            color=color, zorder=40)
+    ax.text(0.04, base_y + 0.06, "Semáforo do gradiente:",
+            fontsize=10.2, weight="bold", color="#111827", zorder=25)
+
+    ax.text(0.04, base_y, title,
+            fontsize=11.0, weight="bold", color=color, zorder=25,
+            bbox=dict(boxstyle="round,pad=0.28", facecolor=box, edgecolor=box, alpha=0.98))
+
+def draw_salmon_box(ax, x=0.04, y=0.05, w=0.78, h=0.18, text=""):
+    # Caixa salmão desenhada como PATCH (altura fixa) + texto no topo (não corta)
+    patch = FancyBboxPatch(
+        (x, y), w, h,
+        boxstyle="round,pad=0.012,rounding_size=0.012",
+        facecolor="#fff7ed", edgecolor="#fed7aa", linewidth=1.6, alpha=0.97, zorder=15
+    )
+    ax.add_patch(patch)
+    ax.text(
+        x + 0.015, y + h - 0.015, text,
+        fontsize=8.1, color="#111827", va="top", ha="left",
+        zorder=16, clip_on=True
+    )
 
 # ============================================================
 # RENDER
 # ============================================================
 fig = plt.figure(figsize=(12.8, 7.2), dpi=100)
+
 writer = imageio.get_writer(
     OUT,
     fps=FPS,
@@ -305,8 +296,8 @@ for i in range(total_frames):
     ppl_now  = ppl_of_tau(tau)
     palv_now = palv_of_tau(tau)
     pl_now   = pl_of_tau(tau)
-    flow_now = flow_of_tau(tau)           # L/s
-    vol_now  = volume_of_tau(tau)         # L acima de CRF
+    flow_now = flow_of_tau(tau)       # L/s
+    vol_now  = volume_of_tau(tau)     # L acima CRF
 
     th = make_history(t, HIST, FPS)
     tau_h = np.array([tt % T_CYCLE for tt in th])
@@ -314,10 +305,10 @@ for i in range(total_frames):
     ppl_h  = np.array([ppl_of_tau(ta) for ta in tau_h])
     palv_h = np.array([palv_of_tau(ta) for ta in tau_h])
     pl_h   = np.array([pl_of_tau(ta) for ta in tau_h])
-    flow_h = np.array([flow_of_tau(ta) for ta in tau_h]) * 60.0  # L/min
+    flow_h = np.array([flow_of_tau(ta) for ta in tau_h]) * 60.0
     vol_h  = np.array([volume_of_tau(ta) for ta in tau_h])
 
-    # cycle boundaries shading
+    # cycle shading
     t_cycle_start = t - (t % T_CYCLE)
     a = t_cycle_start + T_HOLD_EE
     b = a + T_INSP
@@ -354,14 +345,11 @@ for i in range(total_frames):
 
     ax_anim.text(0.43, 0.875, "Caixa torácica",
                  ha="center", va="center", fontsize=9.2, color="#111827",
-                 bbox=dict(boxstyle="round,pad=0.12", facecolor="white", edgecolor="none", alpha=0.80))
+                 bbox=dict(boxstyle="round,pad=0.12", facecolor="white", edgecolor="none", alpha=0.85))
 
-    # inflação ligada ao volume (normalizado)
-    VT_TARGET = max(0.40, float(np.max(V)))  # apenas para normalizar visualmente
-    vol_norm = float(np.clip(vol_now / max(VT_TARGET, 1e-6), 0.0, 1.0))
+    vol_norm = float(np.clip(vol_now / max(float(np.max(V)), 1e-6), 0.0, 1.0))
     draw_lungs_anatomic(ax_anim, center=(0.43, 0.64), scale=1.0, inflate=vol_norm)
 
-    # seta de fluxo
     arrow_mag = float(np.clip(abs(flow_now) / 0.6, 0.0, 1.0))
     if flow_now > 1e-6:
         ax_anim.annotate("", xy=(0.43, 0.64), xytext=(0.88, 0.64),
@@ -374,7 +362,6 @@ for i in range(total_frames):
     else:
         ax_anim.text(0.90, 0.69, "Fluxo = 0", fontsize=9, color="#6b7280", ha="center")
 
-    # diafragma ligado a Pmus
     pm_now = pmus_of_tau(tau)
     dia_norm = float(np.clip(pm_now / max(PMUS_PEAK, 1e-6), 0.0, 1.0))
     dia_y = 0.22 - 0.10 * dia_norm
@@ -424,7 +411,7 @@ for i in range(total_frames):
     ax_p.axvspan(d, e, color="#f3f4f6", alpha=0.20)
 
     # =========================
-    # (C) Fluxo (L/min) — já sai do R-C: acelera e desacelera
+    # (C) Fluxo (L/min)
     # =========================
     ax_f.set_title("Fluxo (L/min)", fontsize=10.8, weight="bold")
     ax_f.plot(th, flow_h, lw=2.6, color="#dc2626", label="Fluxo")
@@ -442,51 +429,50 @@ for i in range(total_frames):
     ax_f.axvspan(d, e, color="#f3f4f6", alpha=0.20)
 
     # =========================
-    # (D) Painel direito — layout FIXO sem sobreposições
+    # (D) Painel direito — SEM SOBREPOSIÇÕES
+    # Regras:
+    #   Topo: leituras
+    #   Meio: fórmula (y~0.57), mini-alvéolo (y~0.42), semáforo (y~0.265)
+    #   Fundo: caixa salmão (y=0.05..0.23) com texto MAIS CURTO e legível
     # =========================
     ax_txt.set_xlim(0, 1)
     ax_txt.set_ylim(0, 1)
     ax_txt.axis("off")
 
-    ax_txt.text(0.04, 0.95, "Leituras (agora)", fontsize=13.5, weight="bold", color="#111827")
+    ax_txt.text(0.04, 0.95, "Leituras (agora)", fontsize=13.5, weight="bold", color="#111827", zorder=30)
+    ax_txt.text(0.04, 0.88, f"Ppl  = {ppl_now:.1f} cmH₂O", fontsize=12.0, weight="bold", color="#111827", zorder=30)
+    ax_txt.text(0.04, 0.82, f"Palv = {palv_now:.1f} cmH₂O", fontsize=12.0, weight="bold", color="#2563eb", zorder=30)
+    ax_txt.text(0.04, 0.76, f"PL   = {pl_now:.1f} cmH₂O", fontsize=12.0, weight="bold", color="#7c3aed", zorder=30)
 
-    ax_txt.text(0.04, 0.88, f"Ppl  = {ppl_now:.1f} cmH₂O", fontsize=12.2, weight="bold", color="#111827")
-    ax_txt.text(0.04, 0.82, f"Palv = {palv_now:.1f} cmH₂O", fontsize=12.2, weight="bold", color="#2563eb")
-    ax_txt.text(0.04, 0.76, f"PL   = {pl_now:.1f} cmH₂O", fontsize=12.2, weight="bold", color="#7c3aed")
+    ax_txt.text(0.04, 0.70, f"Fluxo = {flow_now*60:.0f} L/min", fontsize=12.0, weight="bold",
+                color=("#dc2626" if flow_now > 0 else "#16a34a" if flow_now < 0 else "#6b7280"), zorder=30)
+    ax_txt.text(0.04, 0.64, f"VT ≈ {vol_now*1000:.0f} mL", fontsize=12.0, weight="bold", color="#b91c1c", zorder=30)
 
-    ax_txt.text(0.04, 0.70, f"Fluxo = {flow_now*60:.0f} L/min", fontsize=12.2, weight="bold",
-                color=("#dc2626" if flow_now > 0 else "#16a34a" if flow_now < 0 else "#6b7280"))
-
-    ax_txt.text(0.04, 0.64, f"VT ≈ {vol_now*1000:.0f} mL", fontsize=12.2, weight="bold", color="#b91c1c")
-
-    # Fórmula: sempre inteira, nunca tapa texto acima
+    # fórmula (fixa e nunca por cima das leituras)
     ax_txt.text(
         0.04, 0.575,
         "Pressão transpulmonar:\nPL = Palv − Ppl",
-        fontsize=10.8, weight="bold", color="#6d28d9",
+        fontsize=10.8, weight="bold", color="#6d28d9", zorder=30,
         bbox=dict(boxstyle="round,pad=0.22", facecolor="#ede9fe", edgecolor="#6d28d9", alpha=0.98)
     )
 
-    # Elementos médios (semáforo + mini-alvéolo) — posições fixas
-    draw_alveolus(ax_txt, center=(0.18, 0.40), inflate=vol_norm)
+    # elementos do meio (fixos)
     draw_pl_thermometer(ax_txt, x=0.84, y=0.32, w=0.10, h=0.52, pl_value=pl_now)
+    draw_alveolus(ax_txt, center=(0.20, 0.42), inflate=vol_norm)
+    gradient_semaphore(ax_txt, palv_now, base_y=0.265)
 
-    gradient_semaphore(ax_txt, palv_now, base_y=0.245)
-
-    # Caixa salmão: desceu e ficou FORA do semáforo (sem tapar verde)
-    ax_txt.text(
-        0.04, 0.055,
-        "Passo-a-passo (modelo R–C):\n"
-        "Pmus↑ → Ppl↓ → Palv<0 → fluxo entra\n"
-        "V↑ → (V/C)↑ → ΔP↓ → fluxo desacelera → 0\n"
-        "Pmus↓ → recuo elástico domina → Palv>0 → ar sai\n\n"
-        "Ideia-chave: fluxo = ΔP / R; volume depende de C.",
-        fontsize=8.4,
-        bbox=dict(boxstyle="round,pad=0.33", facecolor="#fff7ed", alpha=0.97, edgecolor="#fed7aa")
+    # caixa salmão (texto curto para caber SEM cortar)
+    salmon_text = (
+        "Passo-a-passo (R–C):\n"
+        "1) Pmus↑ → Ppl↓ → Palv<0 → entra ar\n"
+        "2) V↑ → (V/C)↑ → ΔP↓ → fluxo desacelera\n"
+        "3) Pmus↓ → recuo elástico → Palv>0 → ar sai\n"
+        "Ideia-chave: fluxo = ΔP / R; VT depende de C."
     )
+    draw_salmon_box(ax_txt, x=0.04, y=0.05, w=0.78, h=0.18, text=salmon_text)
 
     # =========================
-    # (E) Volume vs tempo
+    # (E) Volume vs time
     # =========================
     ax_v.set_title("Volume vs Tempo (VT sobre CRF)", fontsize=10.8, weight="bold")
     ax_v.plot(th, vol_h, lw=2.6, color="#b91c1c", label="Volume (L)")
