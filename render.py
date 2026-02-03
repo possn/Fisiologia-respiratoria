@@ -37,7 +37,7 @@ PPL_EI = -7.0            # Pleural at end inspiration (more negative)
 PMUS_PEAK = abs(PPL_EI - PPL_EE)  # 2 cmH2O
 
 # ============================================================
-# R-C model parameters
+# R-C model parameters (didáctico)
 # ============================================================
 R = 5.0
 C = 0.10
@@ -72,6 +72,7 @@ def pmus_of_tau(tau: float) -> float:
         return PMUS_PEAK * smoothstep(x)
     if ph == "hold_ei":
         return PMUS_PEAK
+    # exp
     return PMUS_PEAK * (1.0 - smoothstep(x))
 
 def canvas_to_rgb(fig):
@@ -112,7 +113,7 @@ for k in range(len(tau_grid)):
 PL = Palv - Ppl
 
 # Normalise V to VT_TARGET for visuals
-VT_TARGET = 0.5  # L
+VT_TARGET = 0.5  # L (500 mL)
 Vmin, Vmax = float(np.min(V)), float(np.max(V))
 if (Vmax - Vmin) > 1e-9:
     V_scaled = (V - Vmin) * (VT_TARGET / (Vmax - Vmin))
@@ -144,7 +145,7 @@ def volume_of_tau(tau: float) -> float:
     return interp_cycle(V_scaled, tau)
 
 # ============================================================
-# Drawing: lungs (remove "white notch")
+# Drawing: lungs (anatómico)
 # ============================================================
 def _mix(c1, c2, a):
     c1 = np.array(c1, dtype=float)
@@ -173,7 +174,6 @@ def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
                     facecolor=fill, edgecolor=edge, linewidth=4.0, alpha=0.98)
     ax.add_patch(left); ax.add_patch(right)
 
-    # small internal curves
     for side in [-1, 1]:
         x0 = cx + side*0.12*s
         y0 = cy + 0.06*s
@@ -181,7 +181,6 @@ def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
         ys = y0 - 0.05*s*np.sin(np.linspace(0, np.pi, 120))
         ax.plot(xs, ys, color=_mix(edge, (0,0,0), 0.15), lw=1.1, alpha=0.32, clip_on=True)
 
-    # trachea + bronchi
     tr_w = 0.040*s
     tr_h = 0.095*s
     tr_x = cx - tr_w/2
@@ -206,7 +205,6 @@ def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
                         edgecolor="#111827", linewidth=3.6, facecolor="none", capstyle="round")
     ax.add_patch(bronchi)
 
-    # vessels
     vs = (1.0 + 0.10*inflate)
     red = (0.86, 0.18, 0.18)
     blue = (0.12, 0.45, 0.78)
@@ -235,26 +233,28 @@ def draw_lungs_anatomic(ax, center=(0.43, 0.64), scale=1.0, inflate=0.0):
                                facecolor="none", alpha=0.75, capstyle="round"))
 
 # ============================================================
-# Mini alveolus (smaller, safer position)
+# Mini-alvéolo (MENOR, posição segura, sem sobrepor)
 # ============================================================
-def draw_alveolus(ax, center=(0.18, 0.49), inflate=0.0):
+def draw_alveolus(ax, center=(0.20, 0.415), inflate=0.0):
     cx, cy = center
-    w = 0.10 * (0.92 + 0.18*inflate)
-    h = 0.13 * (0.92 + 0.18*inflate)
+    w = 0.085 * (0.92 + 0.12*inflate)
+    h = 0.110 * (0.92 + 0.12*inflate)
     edge = "#7c3aed"
     fill = (0.93, 0.90, 0.99)
 
     e = Ellipse((cx, cy), width=w, height=h,
-                facecolor=fill, edgecolor=edge, linewidth=2.2, alpha=0.96)
+                facecolor=fill, edgecolor=edge, linewidth=2.1, alpha=0.96)
     ax.add_patch(e)
 
     ax.text(
-        cx, cy + 0.10, "Mini-alvéolo",
+        cx, cy + 0.082, "Mini-alvéolo",
         ha="center",
-        fontsize=9.2, weight="bold", color=edge,
-        bbox=dict(boxstyle="round,pad=0.10", facecolor="white", alpha=0.85, edgecolor="none")
+        fontsize=8.6, weight="bold", color=edge
     )
 
+# ============================================================
+# Termómetro PL (fixo à direita)
+# ============================================================
 def draw_pl_thermometer(ax, x=0.86, y=0.34, w=0.10, h=0.48, pl_value=6.0):
     pl_min, pl_max = 4.0, 10.0
     plv = float(np.clip(pl_value, pl_min, pl_max))
@@ -278,7 +278,10 @@ def draw_pl_thermometer(ax, x=0.86, y=0.34, w=0.10, h=0.48, pl_value=6.0):
     ax.text(x + w/2, y + h + 0.02, "PL", ha="center", fontsize=10, weight="bold", color="#111827")
     ax.text(x + w/2, y - 0.045, f"{pl_value:.1f}", ha="center", fontsize=10, weight="bold", color="#7c3aed")
 
-def gradient_semaphore(ax, palv_value, y_title=0.355, y_box=0.305):
+# ============================================================
+# Semáforo do gradiente (box verde/cinza) - sem colisões
+# ============================================================
+def gradient_semaphore(ax, palv_value, y_title=0.345, y_box=0.295):
     tol = 0.10
     if palv_value < -tol:
         title = "Palv < Patm  →  ar entra"
@@ -296,7 +299,7 @@ def gradient_semaphore(ax, palv_value, y_title=0.355, y_box=0.305):
     ax.text(0.06, y_title, "Semáforo do gradiente:", fontsize=10.2, weight="bold",
             color="#111827")
     ax.text(0.06, y_box, title, fontsize=11.2, weight="bold",
-            bbox=dict(boxstyle="round,pad=0.28", facecolor=box, edgecolor=box, alpha=0.98),
+            bbox=dict(boxstyle="round,pad=0.26", facecolor=box, edgecolor=box, alpha=0.98),
             color=color)
 
 # ============================================================
@@ -469,25 +472,32 @@ for i in range(total_frames):
         ax_f.axvspan(x0, x1, color=col, alpha=al)
 
     # =========================
-    # (D) Painel direito (layout fixo, sem colisões)
+    # (D) Painel direito (FIXO, sem sobreposições / sem texto cortado)
     # =========================
     ax_txt.set_xlim(0, 1)
     ax_txt.set_ylim(0, 1)
     ax_txt.axis("off")
 
-    # --- y anchors (top -> bottom)
+    # âncoras (afinadas para evitar colisões)
     y_title   = 0.95
-    y_ppl     = 0.88
-    y_palv    = 0.82
-    y_pl      = 0.76
-    y_flow    = 0.70
-    y_vt      = 0.64
+    y_ppl     = 0.885
+    y_palv    = 0.825
+    y_pl      = 0.765
+    y_flow    = 0.705
+    y_vt      = 0.645
 
-    y_formula = 0.55     # desceu (resolve colisões com PL/Fluxo/VT)
-    y_alv     = 0.43     # mini-alvéolo está abaixo da fórmula
-    y_sem_t   = 0.36     # título semáforo
-    y_sem_b   = 0.31     # caixa verde
-    y_steps   = 0.07     # caixa salmão (mais em baixo e com margem)
+    # fórmula desce e fica mais compacta
+    y_formula = 0.535
+
+    # mini-alvéolo menor e mais baixo
+    y_alv     = 0.415
+
+    # semáforo mais baixo
+    y_sem_t   = 0.345
+    y_sem_b   = 0.295
+
+    # caixa salmão: topo em 0.235, cresce para baixo (va="top") e não é “clipada”
+    y_steps_top = 0.235
 
     ax_txt.text(0.06, y_title, "Leituras (agora)", fontsize=13.5, weight="bold",
                 color="#111827")
@@ -506,35 +516,31 @@ for i in range(total_frames):
     ax_txt.text(0.06, y_vt, f"VT ≈ {vol_now*1000:.0f} mL", fontsize=12.2, weight="bold",
                 color="#b91c1c")
 
-    # formula box (short, never clipped)
     ax_txt.text(
         0.06, y_formula,
         "Pressão transpulmonar:\nPL = Palv − Ppl",
-        fontsize=11.2, weight="bold", color="#6d28d9",
-        bbox=dict(boxstyle="round,pad=0.26", facecolor="#ede9fe", edgecolor="#6d28d9", alpha=0.98),
+        fontsize=10.6, weight="bold", color="#6d28d9",
+        bbox=dict(boxstyle="round,pad=0.20", facecolor="#ede9fe", edgecolor="#6d28d9", alpha=0.98),
         va="center"
     )
 
-    # mini-alveolus (smaller + lower)
-    draw_alveolus(ax_txt, center=(0.18, y_alv), inflate=pl_norm)
+    draw_alveolus(ax_txt, center=(0.20, y_alv), inflate=pl_norm)
 
-    # thermometer stays right
     draw_pl_thermometer(ax_txt, x=0.86, y=0.34, w=0.10, h=0.48, pl_value=pl_now)
 
-    # semaphore (moved down slightly and isolated)
     gradient_semaphore(ax_txt, palv_now, y_title=y_sem_t, y_box=y_sem_b)
 
-    # salmon box (lower, shorter, guaranteed to fit)
     ax_txt.text(
-        0.06, y_steps,
+        0.06, y_steps_top,
         "Passo-a-passo (R–C):\n"
         "1) Pmus↑ → Ppl↓ → Palv<0 → entra ar\n"
         "2) V↑ → (V/C)↑ → ΔP↓ → fluxo desacelera → 0\n"
         "3) Pmus↓ → recuo elástico domina → Palv>0 → ar sai\n"
         "Ideia-chave: fluxo = ΔP/R; dinâmica definida por R·C.",
-        fontsize=8.6,
-        bbox=dict(boxstyle="round,pad=0.34", facecolor="#fff7ed", alpha=0.97, edgecolor="#fed7aa"),
-        va="bottom"
+        fontsize=8.2,
+        bbox=dict(boxstyle="round,pad=0.28", facecolor="#fff7ed", alpha=0.98, edgecolor="#fed7aa"),
+        va="top",
+        clip_on=False
     )
 
     # =========================
